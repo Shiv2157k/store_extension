@@ -1,7 +1,9 @@
 from flask import Flask, jsonify
 from flask_restful import Api
 from flask_jwt_extended import JWTManager
+from marshmallow import ValidationError
 
+from ma import ma
 from db import db
 from blacklist import BLACKLIST
 from resources.user import UserRegister, UserLogin, User, TokenRefresh, UserLogout
@@ -11,6 +13,7 @@ from resources.store import Store, StoreList
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///data.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# to make sure errors been handled on top layer.
 app.config["PROPAGATE_EXCEPTIONS"] = True
 app.config["JWT_BLACKLIST_ENABLED"] = True  # enable blacklist feature
 app.config["JWT_BLACKLIST_TOKEN_CHECKS"] = [
@@ -24,6 +27,11 @@ api = Api(app)
 @app.before_first_request
 def create_tables():
     db.create_all()
+
+
+@app.errorhandler(ValidationError)
+def handle_marshmallow_validation(err): # except Validation as err
+    return jsonify(err.messages), 400
 
 
 jwt = JWTManager(app)
@@ -49,4 +57,5 @@ api.add_resource(UserLogout, "/logout")
 
 if __name__ == "__main__":
     db.init_app(app)
+    ma.init_app(ma)
     app.run(port=5001, debug=True)
