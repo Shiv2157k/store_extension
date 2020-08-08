@@ -1,4 +1,7 @@
-from flask_restful import Resource, request
+import traceback
+
+from flask import request
+from flask_restful import Resource
 from werkzeug.security import safe_str_cmp
 from flask_jwt_extended import (
     create_access_token,
@@ -8,18 +11,27 @@ from flask_jwt_extended import (
     jwt_required,
     get_raw_jwt,
 )
+
 from schemas.user import UserSchema
 from models.user import UserModel
+from models.confirmation import ConfirmationModel
 from blacklist import BLACKLIST
+from libs.mailgun import MailGunException
 
 
+EMAIL_ALREADY_EXISTS = "Email already exists."
 NAME_ALREADY_EXISTS = "User with name '{}' already exists."
 ERROR_INSERTING = "An error occurred while inserting the item."
 USER_DELETED = "User deleted."
 USER_NOT_FOUND = "User not found."
-USER_CREATED = "User created successfully."
+SUCCESS_REGISTER_MESSAGE = "Account created successfully, an email with an activation link has been sent to your mail."
 INVALID_CREDENTIALS = "Invalid credentials!"
 LOGGED_OUT = "User successfully logged out."
+NOT_CONFIRMED_ERROR = (
+    "You have not confirmed registration, please check your email <{}>"
+)
+USER_CONFIRMED = "User Confirmed."
+FAILED_TO_CREATE = "Internal Server Error"
 
 user_schema = UserSchema()
 
@@ -31,8 +43,22 @@ class UserRegister(Resource):
         user = user_schema.load(user_json)
         if UserModel.find_by_username(user.username):
             return {"message": NAME_ALREADY_EXISTS.format(user.username)}, 400
-        user.save_to_db()
-        return {"message": USER_CREATED}, 201
+        if UserModel.find_by_email(user.email):
+            return {"message": EMAIL_ALREADY_EXISTS}, 400
+
+        try:
+            user.save_to_db()
+            confirmation = ConfirmationModel(user.id)
+            confirmation.save_to_db()
+            user.send_confirmation_email()
+            return {"message": SUCCESS_REGISTER_MESSAGE}, 201
+        except MailGunException as e:
+            user.delete_from_db() # roll back
+            return {"message": str(e)}, 500
+        except: # failed to save user to db.
+            traceback.print_exc()
+            user.delete_from_db()
+            return {"message": FAILED_TO_CREATE}, 500
 
 
 class User(Resource):
@@ -61,16 +87,22 @@ class UserLogin(Resource):
     @classmethod
     def post(cls):
         user_json = request.get_json()
-        user_data = user_schema.load(user_json)
+        user_data = user_schema.load(user_json, partial=("email",))
 
         user = UserModel.find_by_username(user_data.username)
 
         # this is what the `authenticate()` function did in security.py
         if user and safe_str_cmp(user.password, user_data.password):
             # identity= is what the identity() function did in security.py—now stored in the JWT
-            access_token = create_access_token(identity=user.id, fresh=True)
-            refresh_token = create_refresh_token(user.id)
-            return {"access_token": access_token, "refresh_token": refresh_token}, 200
+            confirmation = user.most_recent_confirmation
+            if confirmation and confirmation.confirmed:
+                access_token = create_access_token(identity=user.id, fresh=True)
+                refresh_token = create_refresh_token(user.id)
+                return (
+                    {"access_token": access_token, "refresh_token": refresh_token},
+                    200,
+                )
+            return {"message": NOT_CONFIRMED_ERROR.format(user.username)}, 400
 
         return {"message": INVALID_CREDENTIALS}, 401
 

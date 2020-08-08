@@ -16,7 +16,6 @@ item_list_schema = ItemSchema(many=True)
 
 
 class Item(Resource):
-
     @classmethod
     def get(cls, name: str) -> Tuple:
         item = ItemModel.find_by_name(name)
